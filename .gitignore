@@ -1,0 +1,9 @@
+*.a
+CMakeFiles/*
+.cache/*
+compile_commands.json
+CMakeCache.txt
+Makefile
+bt_mini
+cmake_install.cmake
+

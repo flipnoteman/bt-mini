@@ -12,7 +12,7 @@ sudo apt install libboost-all-dev make cmake
 ```
 
 ### Building and running
-```c
+```bash
 # If you just want to build you can use the build.sh script
 ./build.sh
 

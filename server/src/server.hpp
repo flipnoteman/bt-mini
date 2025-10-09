@@ -1,7 +1,4 @@
 #pragma once
 #include <boost/asio.hpp>
 
-
-void run_server();
-
-
+void run_server(int, char **);

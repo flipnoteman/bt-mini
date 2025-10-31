@@ -13,21 +13,31 @@ find_package(OpenSSL REQUIRED)
 
 ### Client configurations ============================================================== #
 
-# Header-only/deps aggregator for client code
-add_library(btmini INTERFACE) # Interface lets it start empty and you can add libraries later
+include(FetchContent)
+FetchContent_Declare(ftxui
+    GIT_REPOSITORY https://github.com/ArthurSonzogni/ftxui
+    GIT_TAG v6.1.9
+)
+FetchContent_MakeAvailable(ftxui)
 
-# If you have client headers, add them here:
-# target_include_directories(btmini INTERFACE ${CMAKE_SOURCE_DIR}/client/include)
+# Header-only/deps aggregator for client code
+add_library(btmini INTERFACE)
+
+# Include directory
+target_include_directories(btmini INTERFACE ${CMAKE_SOURCE_DIR}/client/include)
 
 # Propagate third-party deps to anything that links btmini
 target_link_libraries(btmini
-  INTERFACE
+    INTERFACE
     Boost::system
     Boost::url
+    ftxui::component
+    ftxui::dom
+    ftxui::screen
 )
 
 add_executable(bt_mini
-  client/src/main.cpp
+    client/src/main.cpp
 )
 target_link_libraries(bt_mini PRIVATE btmini)
 
@@ -38,9 +48,6 @@ add_library(bttracker STATIC
   server/src/server.cpp
 )
 
-# If you have server headers, add them here:
-# target_include_directories(bttracker PUBLIC ${CMAKE_SOURCE_DIR}/server/include)
-
 target_link_libraries(bttracker
   PUBLIC
     Boost::system
@@ -48,7 +55,7 @@ target_link_libraries(bttracker
 )
 
 add_executable(tracker
-  server/src/main.cpp
+    server/src/main.cpp
 )
 target_link_libraries(tracker PRIVATE bttracker)
 

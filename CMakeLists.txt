@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find BOOST
-find_package(Boost 1.83 REQUIRED COMPONENTS system url)
+find_package(Boost 1.83 REQUIRED COMPONENTS system filesystem url)
 
 # HTTPS trackers need OpenSSL
 find_package(OpenSSL REQUIRED)
@@ -30,6 +30,7 @@ target_include_directories(btmini INTERFACE ${CMAKE_SOURCE_DIR}/client/include)
 target_link_libraries(btmini
     INTERFACE
     Boost::system
+    Boost::filesystem
     Boost::url
     ftxui::component
     ftxui::dom

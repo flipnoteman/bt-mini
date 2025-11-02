@@ -3,6 +3,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
+#include <boost/filesystem.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -21,8 +22,22 @@ struct Config {
   std::string host = DEFAULT_HOST;
   std::string port = DEFAULT_PORT;
   std::string target = "/";
+  std::string root_fs = "None";
   bool https = false;
 };
+
+struct AppState {
+  Config cfg;
+};
+
+std::string getCurrDir() {
+  try {
+    boost::filesystem::path currentPath = boost::filesystem::current_path();
+    return currentPath.string();
+  } catch (const boost::filesystem::filesystem_error &ex) {
+    return ex.what();
+  }
+}
 
 // Simple blocking HTTP GET using Boost.Beast
 std::string HttpGet(const std::string &host, const std::string &target) {
@@ -59,7 +74,10 @@ int main(int argc, char **argv) {
   // Keeps it cenetered, clears screen, draws to alternative screen buffer
   auto screen = ScreenInteractive::FullscreenAlternateScreen();
 
-  Config cfg;
+  // Global state
+  AppState state;
+  // Apply current path to root_fs, in the future we may have config file
+  state.cfg.root_fs = getCurrDir() + "/troot";
 
   // Shared string component
   std::string bt_request_message = "Press SPACE to send request";
@@ -67,68 +85,81 @@ int main(int argc, char **argv) {
 
   // Renderer
   Component main_view = Renderer([&] {
-    auto sec = cfg.https ? "https" : "http";
-    return vbox({text("BT-Mini Client") | bold, separator(),
-                 text("Configured endpoint: " + std::string(sec) + "://" +
-                      cfg.host + ":" + cfg.port + cfg.target),
-                 separator(), paragraph(status)}) |
+    auto sec = state.cfg.https ? "https" : "http";
+    return vbox({vbox({text("BT-Mini Client") | bold, separator(),
+                       text("Configured endpoint: " + std::string(sec) + "://" +
+                            state.cfg.host + ":" + state.cfg.port +
+                            state.cfg.target),
+                       separator(), paragraph(status)}),
+                 vbox(text(bt_request_message))}) |
            border | center;
   });
 
   // Options
   bool show_modal = false;
-  std::string in_host = cfg.host;
-  std::string in_port = cfg.port;
-  std::string in_target = cfg.target;
-  int sec_ind = cfg.https ? 1 : 0;
+  std::string in_host = state.cfg.host;
+  std::string in_port = state.cfg.port;
+  std::string in_target = state.cfg.target;
+  int sec_ind = state.cfg.https ? 1 : 0;
   std::string error_msg;
   std::vector<std::string> schemes = {"http", "https"};
+  std::string advertise_root = state.cfg.root_fs;
+
   // Inputs
   auto input_host = Input(&in_host, "hostname");
   auto input_port = Input(&in_port, "port");
   auto input_target = Input(&in_target, "path");
+  auto root_input = Input(&advertise_root, "path");
   auto sec_toggle = Toggle(schemes, &sec_ind);
 
   auto btn_ok = Button(" OK ", [&] {
     error_msg.clear();
 
-    cfg.host = in_host;
-    cfg.port = in_port;
-    cfg.target = in_target;
-    cfg.https = (sec_ind == 1);
+    state.cfg.host = in_host;
+    state.cfg.port = in_port;
+    state.cfg.target = in_target;
+    state.cfg.https = (sec_ind == 1);
+    state.cfg.root_fs = advertise_root;
 
     status = "Saved options.";
     show_modal = false;
   });
 
   auto btn_cancel = Button(" Cancel ", [&] {
-    in_host = cfg.host;
-    in_port = cfg.port;
-    in_target = cfg.target;
-    sec_ind = cfg.https ? 1 : 0;
+    in_host = state.cfg.host;
+    in_port = state.cfg.port;
+    in_target = state.cfg.target;
+    sec_ind = state.cfg.https ? 1 : 0;
+    advertise_root = state.cfg.root_fs;
     error_msg.clear();
     status = "Canceled.";
     show_modal = false;
   });
 
   Components form_children = {
-      input_host, input_port, input_target, sec_toggle,
-      Container::Horizontal(Components{btn_ok, btn_cancel})};
+      input_host,   input_port,
+      input_target, sec_toggle,
+      root_input,   Container::Horizontal(Components{btn_ok, btn_cancel})};
 
   Component modal_form = Container::Vertical(form_children);
 
-  Component modal_window = Renderer(modal_form, [&] -> Element {
+  Component modal_window = Renderer(modal_form, [&]() -> Element {
     Element err =
         error_msg.empty() ? filler() : text(error_msg) | color(Color::RedLight);
 
     return vbox(text(" Options ") | bold | center, separator(),
-                hbox(text(" Host   ") | dim, input_host->Render()) |
+                text("Network Settings"),
+                hbox(text(" Host     ") | dim, input_host->Render()) |
                     size(WIDTH, EQUAL, 48),
-                hbox(text(" Port   ") | dim, input_port->Render()) |
+                hbox(text(" Port     ") | dim, input_port->Render()) |
                     size(WIDTH, EQUAL, 48),
-                hbox(text(" Target ") | dim, input_target->Render()) |
+                hbox(text(" Target   ") | dim, input_target->Render()) |
                     size(WIDTH, EQUAL, 48),
-                hbox(text(" Scheme ") | dim, sec_toggle->Render()) |
+                hbox(text(" Scheme   ") | dim, sec_toggle->Render()) |
+                    size(WIDTH, EQUAL, 48),
+
+                separator(), text("Torrent Settings"),
+                hbox(text(" Root dir ") | dim, root_input->Render()) |
                     size(WIDTH, EQUAL, 48),
                 separator(), err, separator(),
                 hbox(filler(), btn_ok->Render(), text("  "),
@@ -144,10 +175,11 @@ int main(int argc, char **argv) {
       return true;
     }
     if (e == Event::Character('o') && !show_modal) {
-      in_host = cfg.host;
-      in_port = cfg.port;
-      in_target = cfg.target;
-      sec_ind = cfg.https ? 1 : 0;
+      in_host = state.cfg.host;
+      in_port = state.cfg.port;
+      in_target = state.cfg.target;
+      advertise_root = state.cfg.root_fs;
+      sec_ind = state.cfg.https ? 1 : 0;
       error_msg.clear();
 
       show_modal = true;

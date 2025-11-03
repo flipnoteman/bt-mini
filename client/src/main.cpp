@@ -7,6 +7,7 @@
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
+#include <ftxui/dom/table.hpp>
 #include <ftxui/screen/screen.hpp>
 #include <iostream>
 #include <string>
@@ -80,19 +81,36 @@ int main(int argc, char **argv) {
   state.cfg.root_fs = getCurrDir() + "/troot";
 
   // Shared string component
-  std::string bt_request_message = "Press SPACE to send request";
+  std::string bt_request_message = "Press 's' to sync with tracker";
   std::string status = "Press 'o' for options. Press 'q' to quit.";
+
+  std::vector<std::vector<std::string>> data = {
+      {"ID", "Filename", "Size", "Infohash", "Synced?"}};
+
+  auto render_sync_table = [&]() -> Element {
+    Table table(data);
+
+    table.SelectAll().Border();
+    table.SelectRow(0).Separator();
+    table.SelectColumn(0).Separator();
+
+    Element table_el = table.Render() | size(WIDTH, LESS_THAN, 50) |
+                       size(HEIGHT, LESS_THAN, 12);
+
+    return window(text("Sync Table") | bold, vbox({table_el})) | center;
+  };
 
   // Renderer
   Component main_view = Renderer([&] {
     auto sec = state.cfg.https ? "https" : "http";
-    return vbox({vbox({text("BT-Mini Client") | bold, separator(),
-                       text("Configured endpoint: " + std::string(sec) + "://" +
-                            state.cfg.host + ":" + state.cfg.port +
-                            state.cfg.target),
-                       separator(), paragraph(status)}),
-                 vbox(text(bt_request_message))}) |
-           border | center;
+    return hbox({vbox({vbox({text("BT-Mini Client") | bold, separator(),
+                             text("Configured endpoint: " + std::string(sec) +
+                                  "://" + state.cfg.host + ":" +
+                                  state.cfg.port + state.cfg.target),
+                             separator(), paragraph(status)}),
+                       vbox(text(bt_request_message))}) |
+                     border | center,
+                 render_sync_table()});
   });
 
   // Options
@@ -132,7 +150,7 @@ int main(int argc, char **argv) {
     sec_ind = state.cfg.https ? 1 : 0;
     advertise_root = state.cfg.root_fs;
     error_msg.clear();
-    status = "Canceled.";
+    status = "Cancelled.";
     show_modal = false;
   });
 
@@ -190,7 +208,7 @@ int main(int argc, char **argv) {
       btn_cancel->OnEvent(Event::Return); // behave like cancel
       return true;
     }
-    if (!show_modal && e == Event::Character(' ')) {
+    if (!show_modal && e == Event::Character('s')) {
       // To make sure
       if (busy)
         return true;

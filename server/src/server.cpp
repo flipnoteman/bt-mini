@@ -1,4 +1,5 @@
 #include <boost/asio.hpp>
+#include <boost/asio/generic/detail/endpoint.hpp>
 #include <boost/beast.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
@@ -282,6 +283,10 @@ private:
     acceptor_.async_accept([self = shared_from_this()](
                                boost::system::error_code ec, tcp::socket s) {
       if (!ec) {
+        // Debug print message
+        auto e = s.remote_endpoint();
+        std::cout << "Connection request from: " << e.address() << ":"
+                  << e.port() << std::endl;
         std::make_shared<http_session>(std::move(s), self->state_)->run();
       }
       self->do_accept(); // keep accepting

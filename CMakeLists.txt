@@ -21,14 +21,14 @@ FetchContent_Declare(ftxui
 FetchContent_MakeAvailable(ftxui)
 
 # Header-only/deps aggregator for client code
-add_library(btmini INTERFACE)
+add_library(btmini STATIC client/src/networking.cpp)
 
 # Include directory
-target_include_directories(btmini INTERFACE ${CMAKE_SOURCE_DIR}/client/include)
+target_include_directories(btmini PUBLIC ${CMAKE_SOURCE_DIR}/client/include)
 
 # Propagate third-party deps to anything that links btmini
 target_link_libraries(btmini
-    INTERFACE
+    PUBLIC
     Boost::system
     Boost::filesystem
     Boost::url

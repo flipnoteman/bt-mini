@@ -21,7 +21,7 @@ FetchContent_Declare(ftxui
 FetchContent_MakeAvailable(ftxui)
 
 # Header-only/deps aggregator for client code
-add_library(btmini STATIC client/src/networking.cpp)
+add_library(btmini STATIC client/src/networking.cpp client/src/torrent.cpp)
 
 # Include directory
 target_include_directories(btmini PUBLIC ${CMAKE_SOURCE_DIR}/client/include)

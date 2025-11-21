@@ -58,6 +58,14 @@ struct AppState {
     std::atomic<bool> busy = false;
 };
 
+std::string build_endpoint(AppState &state) {
+    std::string sec = state.cfg.https ? "https" : "http";
+
+    std::string s =
+        sec + "://" + state.cfg.host + ":" + state.cfg.port + state.cfg.target;
+    return s;
+}
+
 Element boolDecorator(Element child, bool synced) {
     if (synced) {
         return child | color(Color::Green);
@@ -67,12 +75,10 @@ Element boolDecorator(Element child, bool synced) {
 }
 
 Element RenderMainView(AppState &state) {
-    auto sec = state.cfg.https ? "https" : "http";
+    std::string endpoint = build_endpoint(state);
 
     return window(text("BT-Mini Client") | bold,
-                  vbox({vbox({text("Configured endpoint: " + std::string(sec) +
-                                   "://" + state.temp.host + ":" +
-                                   state.temp.port + state.temp.target),
+                  vbox({vbox({text("Configured endpoint: " + endpoint),
                               separator(), paragraph(state.help_message)})}));
 }
 
@@ -202,14 +208,27 @@ Component MakeOptionsModal(AppState &state, ScreenInteractive &screen) {
 }
 
 int main(int argc, char **argv) {
-    // Keeps it cenetered, clears screen, draws to alternative screen buffer
-    auto screen = ScreenInteractive::FullscreenAlternateScreen();
-
     // Global state
     AppState state;
     rst_options(state); // Set defaults
     state.torrent_entries = scan_root_for_torrents(
         state.cfg.root_fs); // Setup files before rendering
+
+    if (argc >= 3 && std::string(argv[1]) == "-g") {
+        std::string file = argv[2];
+        std::string s = build_endpoint(state) + "/announce";
+        std::string out = file + ".torrent";
+
+        if (make_torrent_from_file(file, s, out, 1024 * 500) != 0) {
+            std::cerr << "Usage: btclient -g <path/to/file>\n";
+            return 1;
+        } else {
+            std::cout << "file: " << out << " created\n";
+            return 0;
+        }
+    }
+    // Keeps it cenetered, clears screen, draws to alternative screen buffer
+    auto screen = ScreenInteractive::FullscreenAlternateScreen();
 
     // Renderer
     Component main_view = Renderer([&] {

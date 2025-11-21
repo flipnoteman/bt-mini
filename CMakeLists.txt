@@ -35,6 +35,7 @@ target_link_libraries(btmini
     ftxui::component
     ftxui::dom
     ftxui::screen
+    OpenSSL::Crypto
 )
 
 add_executable(bt_mini

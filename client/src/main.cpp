@@ -5,6 +5,7 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/filesystem.hpp>
+#include <filepicker.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -38,6 +39,8 @@ struct Config {
     std::string sync_period = "30000";
 };
 
+enum TabID { TORRENTS, DOWNLOADS, OPTIONS };
+
 struct AppState {
     Config cfg;
     Config temp; // temporary config
@@ -45,19 +48,24 @@ struct AppState {
     // Shared string component
     std::string bt_request_message = "Press 's' to sync with tracker";
     std::string status = "";
-    std::string help_message =
-        "Press 'o' for options.\nPress 's' to sync.\nPress 'q' to quit.";
+    std::string hint = "";
 
     // Modal state
-    bool show_options = false;
+    // bool show_options = false;
+    int active_tab = TabID::TORRENTS;
+    std::vector<std::string> tab_labels = {"Torrents", "Downloads", "Options"};
     std::string error_msg;
 
     // Table data headers
     std::vector<TorrentEntry> torrent_entries;
     std::vector<std::string> schemes = {"http", "https"};
     std::atomic<bool> busy = false;
+
+    // Filebrowser state
+    FilePickerState fb;
 };
 
+/// Helper for putting together the ednd point string
 std::string build_endpoint(AppState &state) {
     std::string sec = state.cfg.https ? "https" : "http";
 
@@ -65,59 +73,6 @@ std::string build_endpoint(AppState &state) {
         sec + "://" + state.cfg.host + ":" + state.cfg.port + state.cfg.target;
     return s;
 }
-
-Element boolDecorator(Element child, bool synced) {
-    if (synced) {
-        return child | color(Color::Green);
-    } else {
-        return child | color(Color::Red);
-    }
-}
-
-Element RenderMainView(AppState &state) {
-    std::string endpoint = build_endpoint(state);
-
-    return window(text("BT-Mini Client") | bold,
-                  vbox({vbox({text("Configured endpoint: " + endpoint),
-                              separator(), paragraph(state.help_message)})}));
-}
-
-Element RenderSyncTable(AppState &state) {
-    std::vector<std::vector<std::string>> table_data;
-    table_data.push_back({"Name", "Size (B)", "Infohash", "Synced?"});
-
-    for (const TorrentEntry &te : state.torrent_entries) {
-        std::string size = std::to_string(te.size_bytes);
-        std::string synced = te.synced ? "True" : "False";
-
-        table_data.push_back({te.name, size, te.infohash, synced});
-    }
-
-    Table table(table_data);
-
-    table.SelectAll().Border();
-    table.SelectRow(0).Separator();
-    table.SelectAll().SeparatorHorizontal();
-
-    // This is to decorate the synced column to be red for false and green
-    // for true!
-    for (size_t row = 1; row < table_data.size(); ++row) {
-        if (3 >= (int)table_data[row].size()) {
-            continue;
-        }
-
-        bool is_synced = table_data[row][3].compare("True") == 0;
-
-        table.SelectRow(row).DecorateCells([is_synced](Element cell) {
-            return boolDecorator(std::move(cell), is_synced);
-        });
-    }
-
-    Element table_el = table.Render() | size(WIDTH, LESS_THAN, 100) |
-                       size(HEIGHT, LESS_THAN, 50);
-
-    return window(text("Sync Table") | bold, vbox({table_el})) | center;
-};
 
 /// Copies temp options to main config
 void cp_options(AppState &state) {
@@ -139,7 +94,163 @@ void rst_options(AppState &state) {
     state.temp.sync_period = state.cfg.sync_period;
 }
 
-Component MakeOptionsModal(AppState &state, ScreenInteractive &screen) {
+Element boolDecorator(Element child, bool synced) {
+    if (synced) {
+        return child | color(Color::Green);
+    } else {
+        return child | color(Color::Red);
+    }
+}
+
+Element RenderDownloadsTable(AppState &state) {
+    // Header row:
+    std::vector<std::vector<std::string>> table_data;
+    table_data.push_back({
+        "Name",
+        "Size (B)",
+        "Progress",
+        "Down (kB/s)",
+        "Up (kB/s)",
+        "Status",
+    });
+
+    for (const TorrentEntry &te : state.torrent_entries) {
+        std::string size = std::to_string(te.size_bytes);
+
+        // TODO: replace these with real values later.
+        std::string progress = te.synced ? "100%" : "0%";
+        std::string down_speed = "0.0";
+        std::string up_speed = "0.0";
+        std::string status = te.synced ? "Seeding" : "Stopped";
+
+        table_data.push_back({
+            te.name,
+            size,
+            progress,
+            down_speed,
+            up_speed,
+            status,
+        });
+    }
+
+    Table table(table_data);
+    table.SelectAll().Border();
+    table.SelectRow(0).Separator();
+    table.SelectAll().SeparatorHorizontal();
+
+    Element table_el = table.Render() | size(WIDTH, LESS_THAN, 120) |
+                       size(HEIGHT, LESS_THAN, 40);
+
+    return vbox({
+        window(text("Downloads") | bold, vbox({table_el})),
+        separator(),
+        text("Press 'f' to add a torrent file.") | dim,
+    });
+}
+
+Element RenderMainView(AppState &state) {
+    std::string endpoint = build_endpoint(state);
+
+    return window(text("Connection") | bold,
+                  vbox({
+                      hbox(text(" Endpoint  ") | dim, text(endpoint)),
+                      hbox(text(" Root dir  ") | dim, text(state.cfg.root_fs)),
+                  }));
+}
+
+Element RenderSyncTable(AppState &state) {
+    std::vector<std::vector<std::string>> table_data;
+    table_data.push_back({"Name", "Size (B)", "Infohash", "Synced?"});
+
+    for (const TorrentEntry &te : state.torrent_entries) {
+        std::string size = std::to_string(te.size_bytes);
+        std::string synced = te.synced ? "True" : "False";
+        table_data.push_back({te.name, size, te.infohash, synced});
+    }
+
+    Table table(table_data);
+
+    table.SelectAll().Border();
+    table.SelectRow(0).Separator();
+    table.SelectAll().SeparatorHorizontal();
+
+    for (size_t row = 1; row < table_data.size(); ++row) {
+        if (3 >= (int)table_data[row].size())
+            continue;
+
+        bool is_synced = table_data[row][3] == "True";
+        table.SelectRow(row).DecorateCells([is_synced](Element cell) {
+            return boolDecorator(std::move(cell), is_synced);
+        });
+    }
+
+    Element table_el = table.Render() | size(WIDTH, LESS_THAN, 100) |
+                       size(HEIGHT, LESS_THAN, 50);
+
+    return window(text("Torrents") | bold, vbox({table_el}));
+}
+
+Component MakeDownloadsTab(AppState &state) {
+    return Renderer([&] {
+        Element downloads_table = RenderDownloadsTable(state);
+
+        return vbox({downloads_table | flex});
+    });
+}
+
+Component MakeTorrentsTab(AppState &state) {
+    return Renderer([&] {
+        Element connection = RenderMainView(state);
+        Element sync_table = RenderSyncTable(state);
+
+        return vbox({
+            connection,
+            separator(),
+            sync_table | flex, // let the table take remaining vertical space
+        });
+    });
+}
+
+Component MakeFileBrowser(AppState &state) {
+    return Renderer([&] {
+        Elements rows;
+
+        // This is going to add text for each file in
+        // directory
+        for (size_t i = 0; i < state.fb.entries.size(); ++i) {
+            auto &e = state.fb.entries[i];
+            std::string name = e.path.filename().string();
+            if (e.is_dir)
+                name += "/";
+
+            Element row = text(name);
+            // Visualize whats actually selected
+            if ((int)i == state.fb.selected) {
+                row = inverted(row);
+            }
+
+            rows.push_back(row);
+        }
+
+        // Top of new window
+        auto header = text("Open .torrent (j/k: move, h: ip, l/Enter: "
+                           "open/select, q: cancel)") |
+                      bold;
+
+        // Shows current directory
+        auto path_line = text(state.fb.current_dir.string()) | dim;
+
+        return vbox({
+                   header,
+                   path_line,
+                   separator(),
+                   vbox(std::move(rows)) | frame,
+               }) |
+               border;
+    });
+}
+
+Component MakeOptionsTab(AppState &state, ScreenInteractive &screen) {
     // Inputs
     auto input_host = Input(&state.temp.host, "hostname");
     auto input_port = Input(&state.temp.port, "port");
@@ -148,18 +259,16 @@ Component MakeOptionsModal(AppState &state, ScreenInteractive &screen) {
     auto input_sync_p = Input(&state.temp.sync_period, "milliseconds");
     auto sec_toggle = Toggle(state.schemes, &state.temp.https);
 
-    auto btn_ok = Button(" OK ", [&] {
+    auto btn_ok = Button(" Save ", [&] {
         cp_options(state);
         state.error_msg.clear();
         state.status = "Saved options.";
-        state.show_options = false;
     });
 
-    auto btn_cancel = Button(" Cancel ", [&] {
+    auto btn_cancel = Button(" Reset ", [&] {
         rst_options(state);
         state.error_msg.clear();
         state.status = "Cancelled.";
-        state.show_options = false;
     });
 
     Components form_children = {
@@ -171,40 +280,38 @@ Component MakeOptionsModal(AppState &state, ScreenInteractive &screen) {
         input_sync_p,
         Container::Horizontal(Components{btn_ok, btn_cancel})};
 
-    Component modal_form = Container::Vertical(form_children);
+    Component options_form = Container::Vertical(form_children);
 
-    Component modal_window = Renderer(
-        modal_form,
+    Component options_view = Renderer(
+        options_form,
         [&, input_host, input_port, input_target, sec_toggle, root_input,
          input_sync_p, btn_ok, btn_cancel]() -> Element {
             Element err = state.error_msg.empty()
                               ? filler()
                               : text(state.error_msg) | color(Color::RedLight);
 
-            return vbox(text(" Options ") | bold | center, separator(),
-                        text("Network Settings"),
-                        hbox(text(" Host     ") | dim, input_host->Render()) |
-                            size(WIDTH, EQUAL, 48),
-                        hbox(text(" Port     ") | dim, input_port->Render()) |
-                            size(WIDTH, EQUAL, 48),
-                        hbox(text(" Target   ") | dim, input_target->Render()) |
-                            size(WIDTH, EQUAL, 48),
-                        hbox(text(" Scheme   ") | dim, sec_toggle->Render()) |
-                            size(WIDTH, EQUAL, 48),
+            return vbox(
+                text("Network Settings"),
+                hbox(text(" Host     ") | dim, input_host->Render()) |
+                    size(WIDTH, EQUAL, 48),
+                hbox(text(" Port     ") | dim, input_port->Render()) |
+                    size(WIDTH, EQUAL, 48),
+                hbox(text(" Target   ") | dim, input_target->Render()) |
+                    size(WIDTH, EQUAL, 48),
+                hbox(text(" Scheme   ") | dim, sec_toggle->Render()) |
+                    size(WIDTH, EQUAL, 48),
 
-                        separator(), text("Torrent Settings"),
-                        hbox(text(" Root dir ") | dim, root_input->Render()) |
-                            size(WIDTH, EQUAL, 48),
-                        hbox(text(" Sync Period ") | dim,
-                             input_sync_p->Render()) |
-                            size(WIDTH, EQUAL, 48),
-                        separator(), err, separator(),
-                        hbox(filler(), btn_ok->Render(), text("  "),
-                             btn_cancel->Render(), filler())) |
-                   border | center;
+                separator(), text("Torrent Settings"),
+                hbox(text(" Root dir ") | dim, root_input->Render()) |
+                    size(WIDTH, EQUAL, 48),
+                hbox(text(" Sync Period ") | dim, input_sync_p->Render()) |
+                    size(WIDTH, EQUAL, 48),
+                separator(), err, separator(),
+                hbox(filler(), btn_ok->Render(), text("  "),
+                     btn_cancel->Render(), filler()));
         });
 
-    return modal_window;
+    return options_view;
 }
 
 int main(int argc, char **argv) {
@@ -230,75 +337,163 @@ int main(int argc, char **argv) {
     // Keeps it cenetered, clears screen, draws to alternative screen buffer
     auto screen = ScreenInteractive::FullscreenAlternateScreen();
 
-    // Renderer
-    Component main_view = Renderer([&] {
-        Element status_line = hbox({text(state.status)});
-        Element main_panel =
-            vbox({RenderMainView(state), RenderSyncTable(state)});
+    Component file_browser = MakeFileBrowser(state);
+    Component torrents_tab = MakeTorrentsTab(state);
+    Component downloads_tab = MakeDownloadsTab(state);
+    Component options_tab = MakeOptionsTab(state, screen);
 
-        return vbox({status_line, separator(), main_panel});
+    Component tabs = Container::Tab({torrents_tab, downloads_tab, options_tab},
+                                    &state.active_tab);
+
+    Component root_container = Container::Vertical({tabs, file_browser});
+
+    // Main view and file browser components
+    Component main_view = Renderer(root_container, [&] {
+        Elements tab_labels;
+        for (size_t i = 0; i < state.tab_labels.size(); ++i) {
+            auto label = text(" " + state.tab_labels[i] + " ");
+            if ((int)i == state.active_tab)
+                label = label | inverted;
+            tab_labels.push_back(label);
+        }
+
+        Element tabs_header = hbox(std::move(tab_labels));
+        Element body = tabs->Render();
+
+        switch (state.active_tab) {
+        case TORRENTS:
+            state.hint = "  s: sync  F2: downloads  F3: options";
+            break;
+        case DOWNLOADS:
+            state.hint = "  f: add torrent file  F1: torrents  F3: options";
+            break;
+        case OPTIONS:
+            state.hint = "  Tab: move between fields  F1/F2: other tabs";
+            break;
+        }
+
+        Element status_line = hbox({text("-- ") | dim, text(state.status),
+                                    filler(), text(state.hint) | dim});
+
+        Element base = vbox(
+            {tabs_header, separator(), body | flex, separator(), status_line});
+
+        if (state.fb.visible) {
+            Element overlay = file_browser->Render() | center | clear_under |
+                              size(WIDTH, LESS_THAN, 80) |
+                              size(HEIGHT, LESS_THAN, 24);
+
+            return dbox({base, overlay});
+        }
+
+        return base;
     });
-
-    Component options_modal = MakeOptionsModal(state, screen);
-    Component app = Modal(main_view, options_modal, &state.show_options);
+    // Component app = Modal(main_view, options_modal, &state.show_options);
+    //
+    Component app = main_view;
 
     // Event handler
     app = CatchEvent(app, [&](Event e) {
+        // File picker keybinds
+        if (state.fb.visible) {
+            if (e == Event::Character('j') || e == Event::ArrowDown) {
+                if (state.fb.selected + 1 < (int)state.fb.entries.size())
+                    state.fb.selected++;
+                return true;
+            }
+            if (e == Event::Character('k') || e == Event::ArrowUp) {
+                if (state.fb.selected > 0)
+                    state.fb.selected--;
+                return true;
+            }
+            if (e == Event::Character('h') || e == Event::Backspace) {
+                auto parent = state.fb.current_dir.parent_path();
+                if (!parent.empty()) {
+                    state.fb.current_dir = parent;
+                    refresh_entries(state.fb);
+                }
+                return true;
+            }
+            if (e == Event::Character('l') || e == Event::Return) {
+                if (state.fb.entries.empty())
+                    return true;
+                auto &selected = state.fb.entries[state.fb.selected];
+                if (selected.is_dir) {
+                    state.fb.current_dir = selected.path;
+                    refresh_entries(state.fb);
+                } else {
+                    if (selected.path.extension() == ".torrent") {
+                        state.status = "Loading torrent: " +
+                                       selected.path.filename().string();
+                        state.fb.visible = false;
+                        // TODO: actually start download from torrent file
+                    } else {
+                        state.status = "Not a .torrent file";
+                    }
+                }
+                return true;
+            }
+            if (e == Event::Character('q') || e == Event::Escape) {
+                state.fb.visible = false;
+                return true;
+            }
+
+            // Don’t let random keys hit the rest of app while picker is open
+            return false;
+        }
+
+        // File picker keybinds
+        switch (state.active_tab) {
+        case TORRENTS:
+            if (state.active_tab == 0 && e == Event::Character('s')) {
+                std::thread([&] {
+                    screen.Post([&] {
+                        state.torrent_entries =
+                            scan_root_for_torrents(state.cfg.root_fs);
+                        state.status =
+                            "Scanned root: " + state.cfg.root_fs + " (" +
+                            std::to_string(state.torrent_entries.size()) +
+                            " files)";
+                    });
+                    screen.PostEvent(Event::Custom);
+                }).detach();
+                return true;
+            }
+            break;
+        case DOWNLOADS:
+            // Open file picker
+            if (e == Event::Character('f')) {
+                state.fb.visible = true;
+                state.fb.current_dir = state.cfg.root_fs;
+                refresh_entries(state.fb);
+                return true;
+            }
+            break;
+        case OPTIONS:
+            break;
+        default:
+            break;
+        };
+
+        if (e == Event::F1) {
+            state.active_tab = 0;
+            return true;
+        }
+        if (e == Event::F2) {
+            state.active_tab = 1;
+            return true;
+        }
+        if (e == Event::F3) {
+            state.active_tab = 2;
+            return true;
+        }
+
+        // Global hotkeys
         if (e == Event::Character('q')) {
             screen.Exit();
             return true;
         }
-        if (e == Event::Escape) {
-            // Exit options without saving
-            state.status = "Cancelled.";
-            rst_options(state);
-            state.show_options = false;
-            return true;
-        }
-        if (e == Event::Character('o') && !state.show_options) {
-            state.show_options = true;
-            return true;
-        }
-        if (!state.show_options && e == Event::Character('s')) {
 
-            std::thread([&] {
-                screen.Post([&] {
-                    state.torrent_entries =
-                        scan_root_for_torrents(state.cfg.root_fs);
-                    state.status =
-                        "Scanned root: " + state.cfg.root_fs + " (" +
-                        std::to_string(state.torrent_entries.size()) +
-                        " files)";
-                });
-
-                screen.PostEvent(Event::Custom);
-            }).detach();
-
-            //       // To make sure
-            //       if (state.busy)
-            //         return true;
-            //
-            //       state.busy = true;
-            //       state.status = "Fetching client list...";
-            //       std::thread([&] {
-            //         // Send request
-            //         std::string result = HttpGet("127.0.0.1",
-            //         DEFAULT_PORT,
-            //         "/");
-            //
-            //         // Setup lambda on UI thread queue for excecution
-            //         screen.Post([&, result = std::move(result)] {
-            //           state.status = "Client list fetched.";
-            //           state.bt_request_message = std::move(result);
-            //           state.busy = false;
-            //         });
-            //
-            //         // This just makes sure the screen wakes up and
-            //         rerenders screen.PostEvent(Event::Custom);
-            //       }).detach();
-            //
-            return true;
-        }
         return false;
     });
 

@@ -1,4 +1,5 @@
 #include "torrent.hpp"
+#include "tracker.hpp"
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
@@ -13,6 +14,7 @@
 #include <ftxui/screen/screen.hpp>
 #include <iostream>
 #include <networking.hpp>
+#include <stdexcept>
 #include <string>
 
 #define DEFAULT_HOST "127.0.0.1"
@@ -215,41 +217,58 @@ Component MakeFileBrowser(AppState &state) {
     return Renderer([&] {
         Elements rows;
 
-        // This is going to add text for each file in
-        // directory
         for (size_t i = 0; i < state.fb.entries.size(); ++i) {
             auto &e = state.fb.entries[i];
             std::string name = e.path.filename().string();
             if (e.is_dir)
                 name += "/";
 
-            Element row = text(name);
-            // Visualize whats actually selected
+            Element label = text(name);
+
+            // Highlight selection with a marker and inversion, vim-ish style
             if ((int)i == state.fb.selected) {
-                row = inverted(row);
+                label = hbox({
+                            text("➜ ") | color(Color::Green),
+                            label,
+                        }) |
+                        inverted;
+            } else {
+                label = hbox({
+                    text("  "),
+                    label,
+                });
             }
 
-            rows.push_back(row);
+            rows.push_back(label);
         }
 
-        // Top of new window
-        auto header = text("Open .torrent (j/k: move, h: ip, l/Enter: "
-                           "open/select, q: cancel)") |
-                      bold;
+        if (rows.empty()) {
+            rows.push_back(text("(empty directory)") | dim);
+        }
 
-        // Shows current directory
-        auto path_line = text(state.fb.current_dir.string()) | dim;
+        // Path line at top
+        auto path_line = hbox({
+            text("Path: ") | dim,
+            text(state.fb.current_dir.string()),
+        });
 
+        // Help / hotkeys line at bottom
+        auto help_line =
+            text("j/k: move  h: up  l/Enter: open/select  q/Esc: cancel") | dim;
+
+        // Scrollable file list
+        Element file_list = vbox(std::move(rows)) | frame | vscroll_indicator;
+
+        // This is the dialog *content*
         return vbox({
-                   header,
-                   path_line,
-                   separator(),
-                   vbox(std::move(rows)) | frame,
-               }) |
-               border;
+            path_line,
+            separator(),
+            file_list,
+            separator(),
+            help_line,
+        });
     });
 }
-
 Component MakeOptionsTab(AppState &state, ScreenInteractive &screen) {
     // Inputs
     auto input_host = Input(&state.temp.host, "hostname");
@@ -378,10 +397,13 @@ int main(int argc, char **argv) {
         Element base = vbox(
             {tabs_header, separator(), body | flex, separator(), status_line});
 
-        if (state.fb.visible) {
-            Element overlay = file_browser->Render() | center | clear_under |
-                              size(WIDTH, LESS_THAN, 80) |
-                              size(HEIGHT, LESS_THAN, 24);
+        if (state.fb.visible && state.active_tab == TabID::DOWNLOADS) {
+            Element dialog =
+                window(text(" Open .torrent ") | bold, file_browser->Render());
+
+            Element overlay = dialog | size(WIDTH, EQUAL, 70) |
+                              size(HEIGHT, LESS_THAN, 20) | clear_under |
+                              center;
 
             return dbox({base, overlay});
         }
@@ -418,15 +440,46 @@ int main(int argc, char **argv) {
                 if (state.fb.entries.empty())
                     return true;
                 auto &selected = state.fb.entries[state.fb.selected];
+
+                // If what is selected happens to be directory
                 if (selected.is_dir) {
                     state.fb.current_dir = selected.path;
-                    refresh_entries(state.fb);
+                    refresh_entries(state.fb); // get new directory info
                 } else {
                     if (selected.path.extension() == ".torrent") {
                         state.status = "Loading torrent: " +
                                        selected.path.filename().string();
                         state.fb.visible = false;
-                        // TODO: actually start download from torrent file
+
+                        try {
+                            // Get torrent file info
+                            TorrentMeta meta =
+                                unwrap_torrent_file(selected.path.string());
+
+                            UrlParts u = parse_url(meta.torrent_url);
+                            TrackerServer tracker(u.host,
+                                                  std::to_string(u.port));
+                            TrackerServer::AnnounceParams params;
+                            params.peer_id = "C";
+                            params.info_hash.assign(meta.infohash.begin(),
+                                                    meta.infohash.end());
+                            params.event = "started";
+                            params.port = 6881;
+
+                            auto res = tracker.announce(params);
+
+                            if (!res.error.empty()) {
+                                state.status = "Announce failed: " + res.error;
+
+                            } else {
+                                state.status = "Tracker replied (" +
+                                               std::to_string(res.status_code) +
+                                               "):" + res.body;
+                            }
+                        } catch (std::runtime_error &e) {
+                            state.status = e.what();
+                        }
+
                     } else {
                         state.status = "Not a .torrent file";
                     }

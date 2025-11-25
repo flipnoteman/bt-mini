@@ -88,6 +88,9 @@ int make_torrent_from_file(const std::string &file_path,
     // Compute infohash for file over the bencoded info section
     std::string info_bencoded = bencode::encode(info);
     std::array<uint8_t, 32> info_hash{};
+    SHA256(reinterpret_cast<const unsigned char *>(info_bencoded.c_str()),
+           static_cast<size_t>(info_bencoded.size()),
+           info_hash.data()); // This is a mess lol
     std::string info_hash_str(reinterpret_cast<const char *>(info_hash.data()),
                               info_hash.size());
 

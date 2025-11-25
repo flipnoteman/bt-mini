@@ -1,11 +1,13 @@
 #include "torrent.hpp"
 #include "tracker.hpp"
+#include <atomic>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/filesystem.hpp>
+#include <chrono>
 #include <filepicker.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -13,9 +15,11 @@
 #include <ftxui/dom/table.hpp>
 #include <ftxui/screen/screen.hpp>
 #include <iostream>
+#include <mutex>
 #include <networking.hpp>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #define DEFAULT_HOST "127.0.0.1"
 #define DEFAULT_PORT "8080"
@@ -43,6 +47,28 @@ struct Config {
 
 enum TabID { TORRENTS, DOWNLOADS, OPTIONS };
 
+std::string generateRandomString(size_t length) {
+    // Define the character set
+    const std::string char_set =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+    // Create a random number engine and distribution
+    std::random_device rd;        // Seed for the random number engine
+    std::mt19937 generator(rd()); // Mersenne Twister engine
+    std::uniform_int_distribution<> distribution(
+        0, char_set.size() - 1); // Distribute indices within char_set
+
+    // Build the random string
+    std::string random_string;
+    random_string.reserve(length); // Pre-allocate memory for efficiency
+
+    // Generate characters and append them to the string
+    std::generate_n(std::back_inserter(random_string), length,
+                    [&]() { return char_set[distribution(generator)]; });
+
+    return random_string;
+}
+
 struct AppState {
     Config cfg;
     Config temp; // temporary config
@@ -65,6 +91,13 @@ struct AppState {
 
     // Filebrowser state
     FilePickerState fb;
+
+    // Tracker stuff
+    std::atomic<bool> announce_thread_running{false};
+    std::thread announce_thread;
+    std::mutex torrent_entries_mutex;
+
+    std::string peer_id = generateRandomString(10);
 };
 
 /// Helper for putting together the ednd point string
@@ -101,6 +134,98 @@ Element boolDecorator(Element child, bool synced) {
         return child | color(Color::Green);
     } else {
         return child | color(Color::Red);
+    }
+}
+
+void announce_all_torrents(AppState &state) {
+    int period_ms = 30000;
+    try {
+        period_ms = std::stoi(state.cfg.sync_period);
+    } catch (...) {
+    }
+
+    std::vector<TorrentEntry> entries_copy;
+    {
+        std::lock_guard<std::mutex> lock(state.torrent_entries_mutex);
+        entries_copy = state.torrent_entries;
+    }
+
+    for (const auto &te : entries_copy) {
+        // If no torrent, dont sync
+        if (!te.synced) {
+            continue;
+        }
+
+        std::string torrent_path = te.filepath + ".torrent";
+        try {
+            TorrentMeta meta = unwrap_torrent_file(torrent_path);
+
+            UrlParts u = parse_url(meta.torrent_url);
+
+            if (u.port <= 0) {
+                std::cerr << "[announce] Invalid tracker port in URL: "
+                          << meta.torrent_url << "\n";
+                continue;
+            }
+
+            TrackerServer tracker(u.host, std::to_string(u.port));
+            TrackerServer::AnnounceParams params;
+            params.peer_id = state.peer_id;
+            params.info_hash.assign(meta.infohash.begin(), meta.infohash.end());
+            params.event = "";
+            params.port = 6881;
+            params.uploaded = 0;
+            params.downloaded = 0;
+            params.left = 0;
+
+            auto res = tracker.announce(params);
+
+            if (!res.error.empty()) {
+                std::cerr << "[annnounce] " << te.name
+                          << ": announce failed: " << res.error << "\n";
+            } else {
+                // std::cerr << "[announce] " << te.name << ": tracker " <<
+                // u.host
+                //           << ":" << u.port << " responded (" <<
+                //           res.status_code
+                //           << ")\n";
+            }
+        } catch (const std::exception &e) {
+            std::cerr << "[announce] Error for file '" << te.name
+                      << "': " << e.what() << "\n";
+        }
+    }
+}
+
+// This will start the announcer thread which will loop through all synced files
+// and re-announce them on a set period
+void start_announcer(AppState &state) {
+    if (state.announce_thread_running.load()) {
+        return;
+    }
+
+    state.announce_thread_running = true;
+
+    state.announce_thread = std::thread([&state]() {
+        while (state.announce_thread_running.load()) {
+            announce_all_torrents(state);
+            int period_ms = 30000;
+            try {
+                period_ms = std::stoi(state.cfg.sync_period);
+            } catch (...) {
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
+        }
+    });
+}
+
+void stop_announer(AppState &state) {
+    state.announce_thread_running = false;
+    if (state.announce_thread.joinable()) {
+        // This basically "joins" the thread with the main thread, essentially
+        // canceling it
+        state.announce_thread.join();
     }
 }
 
@@ -337,8 +462,6 @@ int main(int argc, char **argv) {
     // Global state
     AppState state;
     rst_options(state); // Set defaults
-    state.torrent_entries = scan_root_for_torrents(
-        state.cfg.root_fs); // Setup files before rendering
 
     if (argc >= 3 && std::string(argv[1]) == "-g") {
         std::string file = argv[2];
@@ -353,6 +476,14 @@ int main(int argc, char **argv) {
             return 0;
         }
     }
+
+    {
+        std::lock_guard<std::mutex> lock(state.torrent_entries_mutex);
+        state.torrent_entries = scan_root_for_torrents(
+            state.cfg.root_fs); // Setup files before rendering
+    }
+
+    start_announcer(state);
     // Keeps it cenetered, clears screen, draws to alternative screen buffer
     auto screen = ScreenInteractive::FullscreenAlternateScreen();
 
@@ -452,7 +583,8 @@ int main(int argc, char **argv) {
                         state.fb.visible = false;
 
                         try {
-                            // Get torrent file info
+                            // TODO: Set it up so that it advertises files
+                            // periodically Get torrent file info
                             TorrentMeta meta =
                                 unwrap_torrent_file(selected.path.string());
 
@@ -501,8 +633,13 @@ int main(int argc, char **argv) {
             if (state.active_tab == 0 && e == Event::Character('s')) {
                 std::thread([&] {
                     screen.Post([&] {
-                        state.torrent_entries =
-                            scan_root_for_torrents(state.cfg.root_fs);
+                        {
+                            std::lock_guard<std::mutex> lock(
+                                state.torrent_entries_mutex);
+                            state.torrent_entries = scan_root_for_torrents(
+                                state.cfg
+                                    .root_fs); // Setup files before rendering
+                        }
                         state.status =
                             "Scanned root: " + state.cfg.root_fs + " (" +
                             std::to_string(state.torrent_entries.size()) +
@@ -551,5 +688,6 @@ int main(int argc, char **argv) {
     });
 
     screen.Loop(app);
+    stop_announer(state);
     return 0;
 }

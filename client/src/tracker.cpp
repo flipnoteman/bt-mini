@@ -38,7 +38,7 @@ static std::string build_query(const TrackerServer::AnnounceParams &p) {
     std::ostringstream oss;
 
     // Boom, url parameterers created just like that
-    oss << "info_hash=" << url_encode(p.info_hash)
+    oss << "infohash=" << url_encode(p.info_hash)
         << "&peer_id=" << url_encode(p.peer_id) << "&port=" << p.port
         << "&uploaded=" << p.uploaded << "&downloaded=" << p.downloaded
         << "&left=" << p.left;
@@ -110,9 +110,11 @@ TrackerServer::announce(const AnnounceParams &params) {
         boost::system::error_code ec;
         stream.socket().shutdown(tcp::socket::shutdown_both, ec);
 
+        // Retrieve status
         result.status_code = static_cast<int>(res.result_int());
         result.body = std::move(res.body());
 
+        // If the status wasn't good, report it
         if (res.result() != boost::beast::http::status::ok) {
             std::ostringstream err;
             err << "Tracker HTTP error: " << res.result_int() << " "

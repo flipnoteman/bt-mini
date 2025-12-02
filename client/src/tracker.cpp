@@ -59,13 +59,15 @@ static std::string build_query(const TrackerServer::AnnounceParams &p) {
     return oss.str();
 }
 
-// This is just the basic constructor
+/// This is just the basic constructor
 TrackerServer::TrackerServer(std::string host, std::string port,
                              std::string announce_path)
     : host_(std::move(host)), port_(std::move(port)),
       announce_path_(std::move(announce_path)) {};
 using tcp = boost::asio::ip::tcp;
 
+/// This will initiate a connection, send a request telling them the file we
+/// own, and then close the stream
 TrackerServer::AnnounceResult
 TrackerServer::announce(const AnnounceParams &params) {
     AnnounceResult result;

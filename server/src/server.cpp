@@ -190,7 +190,6 @@ struct TrackerState {
         for (auto &p : it->second) {
             if (p.peer_id == self_peer_id && p.addr == self_addr &&
                 p.port == self_port) {
-                std::cout << "[TrackerState::list_peers] Skipping self peer\n";
                 continue;
             }
             out.push_back(p);
@@ -319,18 +318,19 @@ class http_session : public std::enable_shared_from_this<http_session> {
         auto port = query_param(target, "port");
         auto ev = query_param(target, "event");
 
-        std::string ih_hex = to_hex(ih.value());
-
         if (!ih || !pid || !port) {
             std::cout << "[http_session::handle_request] Missing one or more "
                          "required params: "
-                      << "infohash=" << (ih ? ih_hex : "<none>") << ", "
+                      << "infohash=" << (ih ? to_hex(ih.value()) : "<none>")
+                      << ", "
                       << "peer_id=" << (pid ? *pid : "<none>") << ", "
                       << "port=" << (port ? *port : "<none>") << "\n";
             return write_response(
                 http::status::bad_request,
                 R"({"error":"missing infohash|peer_id|port"})");
         }
+
+        std::string ih_hex = to_hex(ih.value());
 
         std::cout << "[http_session::handle_request] Parameters: {\n"
                   << "  infohash: " << ih_hex << "\n"

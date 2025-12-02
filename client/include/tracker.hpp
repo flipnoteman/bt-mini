@@ -14,7 +14,7 @@ class TrackerServer {
         std::uint64_t downloaded = 0;
         std::uint64_t left = 0;
         std::string event; // state basically
-        bool compact = true;
+        bool compact = false;
         int num_want = -1; // -1: elide
     };
 

@@ -25,7 +25,7 @@
 #include <string>
 #include <thread>
 
-#define DEFAULT_HOST "127.0.0.1"
+#define DEFAULT_HOST "3.16.75.117"
 #define DEFAULT_PORT "8080"
 #define PEER_PORT 6881
 
